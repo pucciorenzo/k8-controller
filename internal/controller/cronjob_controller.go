@@ -36,7 +36,11 @@ import (
 	ref "k8s.io/client-go/tools/reference"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	batchv1 "tutorial.kubebuilder.io/project/api/v1"
 )
@@ -547,7 +551,7 @@ var (
 )
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager, c <-chan event.GenericEvent) error {
 	// set up a real clock, since we're not in a test
 	if r.Clock == nil {
 		r.Clock = realClock{}
@@ -571,8 +575,17 @@ func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
+	src := source.Channel{Source: c}
+
+	h := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+		fmt.Print("event received")
+		return []reconcile.Request{
+			// TOASK: they use "list" to get the elements to fill the reconcile request
+		}
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&batchv1.CronJob{}).
-		Owns(&kbatch.Job{}).
+		WatchesRawSource(&src, h).
 		Complete(r)
 }

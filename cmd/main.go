@@ -19,7 +19,14 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"net"
 	"os"
+	"syscall"
+
+	"github.com/vishvananda/netlink"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -29,7 +36,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -67,8 +73,71 @@ CronJob controller's `SetupWithManager` method.
 */
 
 func main() {
-	/*
-	 */
+	// Create channels to receive notifications for link, address, and route changes
+	chLink := make(chan netlink.LinkUpdate)
+	doneLink := make(chan struct{})
+	defer close(doneLink)
+
+	chAddr := make(chan netlink.AddrUpdate)
+	doneAddr := make(chan struct{})
+	defer close(doneAddr)
+
+	chRoute := make(chan netlink.RouteUpdate)
+	doneRoute := make(chan struct{})
+	defer close(doneRoute)
+
+	c := make(chan event.GenericEvent)
+
+	// Subscribe to the address updates
+	if err := netlink.AddrSubscribe(chAddr, doneAddr); err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	// Subscribe to the link updates
+	if err := netlink.LinkSubscribe(chLink, doneLink); err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	// Subscribe to the route updates
+	if err := netlink.RouteSubscribe(chRoute, doneRoute); err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	// Create maps to keep track of interfaces and newly created interfaces
+	newlyCreated := make(map[string]bool)
+	interfaces := make(map[string]bool)
+
+	// Get the list of existing links and add them to the interfaces map
+	links, err := netlink.LinkList()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	for _, link := range links {
+		interfaces[link.Attrs().Name] = true
+	}
+
+	fmt.Println("Monitoring started. Press Ctrl+C to stop it.")
+
+	// Start an infinite loop to handle the notifications
+	/************************* GO ROUTINE *******************************/
+	// TOASK: is it ok?
+	go func() {
+		for {
+			select {
+			case updateLink := <-chLink:
+				handleLinkUpdate(updateLink, interfaces, newlyCreated, c)
+			case updateAddr := <-chAddr:
+				handleAddrUpdate(updateAddr, interfaces, c)
+			case updateRoute := <-chRoute:
+				handleRouteUpdate(updateRoute, c)
+			}
+		}
+	}()
+
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
@@ -84,24 +153,13 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
+	// TOASK: options? Default namespace?
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "80807133.tutorial.kubebuilder.io",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -113,40 +171,65 @@ func main() {
 	if err = (&controller.CronJobReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, c); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CronJob")
 		os.Exit(1)
 	}
+}
 
-	/*
-		We'll also set up webhooks for our type, which we'll talk about next.
-		We just need to add them to the manager.  Since we might want to run
-		the webhooks separately, or not run them when testing our controller
-		locally, we'll put them behind an environment variable.
-
-		We'll just make sure to set `ENABLE_WEBHOOKS=false` when we run locally.
-	*/
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = (&batchv1.CronJob{}).SetupWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "CronJob")
-			os.Exit(1)
+func handleLinkUpdate(updateLink netlink.LinkUpdate, interfaces map[string]bool, newlyCreated map[string]bool, c chan<- event.GenericEvent) {
+	if updateLink.Header.Type == syscall.RTM_DELLINK {
+		// Link has been removed
+		fmt.Println("Interface removed:", updateLink.Link.Attrs().Name)
+		delete(interfaces, updateLink.Link.Attrs().Name)
+		delete(newlyCreated, updateLink.Link.Attrs().Name)
+	} else if !interfaces[updateLink.Link.Attrs().Name] && updateLink.Header.Type == syscall.RTM_NEWLINK {
+		// New link has been added
+		fmt.Println("Interface added")
+		interfaces[updateLink.Link.Attrs().Name] = true
+		newlyCreated[updateLink.Link.Attrs().Name] = true
+	} else if updateLink.Header.Type == syscall.RTM_NEWLINK {
+		// Link has been modified
+		if updateLink.Link.Attrs().Flags&net.FlagUp != 0 {
+			fmt.Println("Interface", updateLink.Link.Attrs().Name, "is up")
+			delete(newlyCreated, updateLink.Link.Attrs().Name)
+		} else if !newlyCreated[updateLink.Link.Attrs().Name] {
+			fmt.Println("Interface", updateLink.Link.Attrs().Name, "is down")
 		}
 	}
-	//+kubebuilder:scaffold:builder
+	send(c)
+}
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+func handleAddrUpdate(updateAddr netlink.AddrUpdate, interfaces map[string]bool, c chan<- event.GenericEvent) {
+	iface, err := net.InterfaceByIndex(updateAddr.LinkIndex)
+	if err != nil {
+		fmt.Println("Address (", updateAddr.LinkAddress.IP, ") removed from the deleted interface")
+		return
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+	if updateAddr.NewAddr {
+		// New address has been added
+		fmt.Println("New address (", updateAddr.LinkAddress.IP, ") added to the interface:", iface.Name)
+	} else {
+		// Address has been removed
+		fmt.Println("Address (", updateAddr.LinkAddress.IP, ") removed from the interface:", iface.Name)
 	}
+	send(c)
+}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
+func handleRouteUpdate(updateRoute netlink.RouteUpdate, c chan<- event.GenericEvent) {
+	if updateRoute.Type == syscall.RTM_NEWROUTE {
+		// New route has been added
+		fmt.Println("New route added:", updateRoute.Route.Dst)
+	} else if updateRoute.Type == syscall.RTM_DELROUTE {
+		// Route has been removed
+		fmt.Println("Route removed:", updateRoute.Route.Dst)
 	}
-	// +kubebuilder:docs-gen:collapse=old stuff
+	send(c)
+}
+
+// send a channel with generic event type
+func send(c chan<- event.GenericEvent) {
+	ge := event.GenericEvent{}
+	c <- ge
+	klog.Infof("Starting Netlink routine")
 }
