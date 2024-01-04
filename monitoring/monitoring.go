@@ -15,6 +15,14 @@ func StartMonitoring(c chan event.GenericEvent, flag int) {
 	addr := false
 	route := false
 
+	// monitor events based on the flag
+	// 1 = link
+	// 2 = address
+	// 3 = link and address
+	// 4 = route
+	// 5 = link and route
+	// 6 = address and route
+	// 7 = link, address, and route
 	switch flag {
 	case 1:
 		link = true
