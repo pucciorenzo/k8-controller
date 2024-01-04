@@ -36,6 +36,7 @@ import (
 
 	batchv1 "tutorial.kubebuilder.io/project/api/v1"
 	"tutorial.kubebuilder.io/project/internal/controller"
+	"tutorial.kubebuilder.io/project/monitoring"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -99,7 +100,15 @@ func main() {
 	// +kubebuilder:docs-gen:collapse=old stuff
 
 	c := make(chan event.GenericEvent)
-	go startMonitoring(c)
+	// monitor events based on the flag
+	// 1 = link
+	// 2 = address
+	// 3 = link and address
+	// 4 = route
+	// 5 = link and route
+	// 6 = address and route
+	// 7 = link, address, and route
+	go monitoring.StartMonitoring(c, 7)
 
 	if err = (&controller.CronJobReconciler{
 		Client: mgr.GetClient(),

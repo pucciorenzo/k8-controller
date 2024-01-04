@@ -1,4 +1,4 @@
-module github.com/pucciorenzo/k8-controller
+module tutorial.kubebuilder.io/project
 
 go 1.20
 

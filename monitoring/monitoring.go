@@ -7,15 +7,39 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	//+kubebuilder:scaffold:imports
 )
 
-func startMonitoring(c chan event.GenericEvent) {
-	// TODO handle different types of callings (just interface, just address...)
+func StartMonitoring(c chan event.GenericEvent, flag int) {
+
+	link := false
+	addr := false
+	route := false
+
+	switch flag {
+	case 1:
+		link = true
+	case 2:
+		addr = true
+	case 3:
+		link = true
+		addr = true
+	case 4:
+		route = true
+	case 5:
+		route = true
+		link = true
+	case 6:
+		route = true
+		addr = true
+	case 7:
+		link = true
+		addr = true
+		route = true
+	default:
+		fmt.Println("Error: invalid flag")
+		return
+	}
+
 	// Create channels to receive notifications for link, address, and route changes
 	chLink := make(chan netlink.LinkUpdate)
 	doneLink := make(chan struct{})
@@ -65,11 +89,17 @@ func startMonitoring(c chan event.GenericEvent) {
 	for {
 		select {
 		case updateLink := <-chLink:
-			handleLinkUpdate(updateLink, interfaces, newlyCreated, c)
+			if link {
+				handleLinkUpdate(updateLink, interfaces, newlyCreated, c)
+			}
 		case updateAddr := <-chAddr:
-			handleAddrUpdate(updateAddr, interfaces, c)
+			if addr {
+				handleAddrUpdate(updateAddr, interfaces, c)
+			}
 		case updateRoute := <-chRoute:
-			handleRouteUpdate(updateRoute, c)
+			if route {
+				handleRouteUpdate(updateRoute, c)
+			}
 		}
 	}
 }
