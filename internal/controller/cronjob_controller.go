@@ -579,9 +579,7 @@ func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager, c <-chan event.Ge
 
 	h := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 		fmt.Print("event received")
-		return []reconcile.Request{
-			// TOASK: they use "list" to get the elements to fill the reconcile request
-		}
+		return []reconcile.Request{}
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
