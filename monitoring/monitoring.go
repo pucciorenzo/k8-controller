@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"syscall"
@@ -9,45 +10,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
-func StartMonitoring(c chan event.GenericEvent, flag int) {
+// Options defines the options for the monitoring.
+type Options struct {
+	Link  bool
+	Addr  bool
+	Route bool
+}
 
-	link := false
-	addr := false
-	route := false
-
-	// monitor events based on the flag
-	// 1 = link
-	// 2 = address
-	// 3 = link and address
-	// 4 = route
-	// 5 = link and route
-	// 6 = address and route
-	// 7 = link, address, and route
-	switch flag {
-	case 1:
-		link = true
-	case 2:
-		addr = true
-	case 3:
-		link = true
-		addr = true
-	case 4:
-		route = true
-	case 5:
-		route = true
-		link = true
-	case 6:
-		route = true
-		addr = true
-	case 7:
-		link = true
-		addr = true
-		route = true
-	default:
-		fmt.Println("Error: invalid flag")
-		return
-	}
-
+// StartMonitoring starts the monitoring of the network interfaces.
+// If there is a change in the network interfaces, it will send a message to the channel.
+// With the options, you can choose to monitor only the link, address, or route changes.
+func StartMonitoring(ctx context.Context, ch chan event.GenericEvent, options Options) {
 	// Create channels to receive notifications for link, address, and route changes
 	chLink := make(chan netlink.LinkUpdate)
 	doneLink := make(chan struct{})
@@ -97,22 +70,27 @@ func StartMonitoring(c chan event.GenericEvent, flag int) {
 	for {
 		select {
 		case updateLink := <-chLink:
-			if link {
-				handleLinkUpdate(updateLink, interfaces, newlyCreated, c)
+			if options.Link {
+				handleLinkUpdate(&updateLink, interfaces, newlyCreated, ch)
 			}
 		case updateAddr := <-chAddr:
-			if addr {
-				handleAddrUpdate(updateAddr, interfaces, c)
+			if options.Addr {
+				handleAddrUpdate(&updateAddr, ch)
 			}
 		case updateRoute := <-chRoute:
-			if route {
-				handleRouteUpdate(updateRoute, c)
+			if options.Route {
+				handleRouteUpdate(&updateRoute, ch)
 			}
+		// TODO ask if it's ok
+		case <-ctx.Done():
+			fmt.Println("Monitoring stopped")
+			return
 		}
 	}
 }
 
-func handleLinkUpdate(updateLink netlink.LinkUpdate, interfaces map[string]bool, newlyCreated map[string]bool, c chan<- event.GenericEvent) {
+func handleLinkUpdate(updateLink *netlink.LinkUpdate, interfaces map[string]bool,
+	newlyCreated map[string]bool, ch chan<- event.GenericEvent) {
 	if updateLink.Header.Type == syscall.RTM_DELLINK {
 		// Link has been removed
 		fmt.Println("Interface removed:", updateLink.Link.Attrs().Name)
@@ -132,10 +110,10 @@ func handleLinkUpdate(updateLink netlink.LinkUpdate, interfaces map[string]bool,
 			fmt.Println("Interface", updateLink.Link.Attrs().Name, "is down")
 		}
 	}
-	send(c)
+	send(ch)
 }
 
-func handleAddrUpdate(updateAddr netlink.AddrUpdate, interfaces map[string]bool, c chan<- event.GenericEvent) {
+func handleAddrUpdate(updateAddr *netlink.AddrUpdate, ch chan<- event.GenericEvent) {
 	iface, err := net.InterfaceByIndex(updateAddr.LinkIndex) // Change to pass the error to the caller
 	if err != nil {
 		fmt.Println("Address (", updateAddr.LinkAddress.IP, ") removed from the deleted interface")
@@ -144,15 +122,15 @@ func handleAddrUpdate(updateAddr netlink.AddrUpdate, interfaces map[string]bool,
 	if updateAddr.NewAddr {
 		// New address has been added
 		fmt.Println("New address (", updateAddr.LinkAddress.IP, ") added to the interface:", iface.Name)
-		send(c)
+		send(ch)
 	} else {
 		// Address has been removed
 		fmt.Println("Address (", updateAddr.LinkAddress.IP, ") removed from the interface:", iface.Name)
-		send(c)
+		send(ch)
 	}
 }
 
-func handleRouteUpdate(updateRoute netlink.RouteUpdate, c chan<- event.GenericEvent) {
+func handleRouteUpdate(updateRoute *netlink.RouteUpdate, ch chan<- event.GenericEvent) {
 	if updateRoute.Type == syscall.RTM_NEWROUTE {
 		// New route has been added
 		fmt.Println("New route added:", updateRoute.Route.Dst)
@@ -160,12 +138,12 @@ func handleRouteUpdate(updateRoute netlink.RouteUpdate, c chan<- event.GenericEv
 		// Route has been removed
 		fmt.Println("Route removed:", updateRoute.Route.Dst)
 	}
-	send(c)
+	send(ch)
 }
 
-// send a channel with generic event type
-func send(c chan<- event.GenericEvent) {
+// Send a channel with generic event type.
+func send(ch chan<- event.GenericEvent) {
 	// Triggers a new reconcile
 	ge := event.GenericEvent{}
-	c <- ge
+	ch <- ge
 }

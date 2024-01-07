@@ -18,6 +18,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 
@@ -99,21 +100,22 @@ func main() {
 
 	// +kubebuilder:docs-gen:collapse=old stuff
 
-	c := make(chan event.GenericEvent)
-	// monitor events based on the flag
-	// 1 = link
-	// 2 = address
-	// 3 = link and address
-	// 4 = route
-	// 5 = link and route
-	// 6 = address and route
-	// 7 = link, address, and route
-	go monitoring.StartMonitoring(c, 7)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := make(chan event.GenericEvent)
+	options := monitoring.Options{
+		Link:  true,
+		Addr:  true,
+		Route: true,
+	}
+
+	go monitoring.StartMonitoring(ctx, ch, options)
 
 	if err = (&controller.CronJobReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr, c); err != nil {
+	}).SetupWithManager(mgr, ch); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CronJob")
 		os.Exit(1)
 	}
